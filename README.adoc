@@ -1,0 +1,8 @@
+= PagerDuty Tekton Interceptor 
+Ron Green <8326+rogreen@users.noreply.gitlab.cee.redhat.com>
+:toc:
+
+== Purpose
+In order to make PD payloads be validated based on a secret key, we need to pull write a custom tekton interceptor.
+
+this repo will create the interceptor and all of the required components to deploy it on a cluster
