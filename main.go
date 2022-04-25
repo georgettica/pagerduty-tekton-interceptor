@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1beta1"
 	"github.com/tektoncd/triggers/pkg/interceptors"
@@ -62,7 +64,7 @@ func (w *Interceptor) Process(ctx context.Context, r *triggersv1.InterceptorRequ
 	if p.SecretRef != nil {
 		// Check the secret to see if it is empty
 		if p.SecretRef.SecretKey == "" {
-			return interceptors.Fail(codes.FailedPrecondition, "bitbucket interceptor secretRef.secretKey is empty")
+			return interceptors.Fail(codes.FailedPrecondition, "pagerduty interceptor secretRef.secretKey is empty")
 		}
 
 		header := headers.Get("X-Hub-Signature")
@@ -72,9 +74,18 @@ func (w *Interceptor) Process(ctx context.Context, r *triggersv1.InterceptorRequ
 
 		ns, _ := triggersv1.ParseTriggerID(r.Context.TriggerID)
 
-		_, err := interceptors.GetSecretToken(nil, w.SecretLister, p.SecretRef, ns)
+		secretToken, err := interceptors.GetSecretToken(nil, w.SecretLister, p.SecretRef, ns)
 		if err != nil {
 			return interceptors.Failf(codes.FailedPrecondition, "error getting secret: %v", err)
+		}
+
+		req := new(http.Request)
+		responseBody := io.NopCloser(strings.NewReader(r.Body))
+		req.Header = headers
+		req.Body = responseBody
+
+		if err := sdk.VerifySignature(req, secretToken); err != nil {
+			return interceptors.Failf(codes.FailedPrecondition, err.Error())
 		}
 	}
 

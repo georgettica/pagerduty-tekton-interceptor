@@ -3,6 +3,7 @@ module github.com/georgettica/pagerduty-tekton-interceptor
 go 1.17
 
 require (
+	github.com/PagerDuty/go-pagerduty v1.5.1
 	github.com/tektoncd/triggers v0.19.1
 	go.uber.org/zap v1.19.1
 	google.golang.org/grpc v1.44.0
