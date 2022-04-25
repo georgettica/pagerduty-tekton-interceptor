@@ -1,0 +1,134 @@
+# https://taskfile.dev
+
+version: '3'
+
+env:
+  COBRA_CLI_VERSION: v1.3.0
+  GOLANGCI_LINT_VERSION: v1.44.2
+  GORELEASER_VERSION: v1.6.3
+  KUBECTL_SLICE_VERSION: v1.2.1
+  KUSTOMIZE_MAJOR: v4
+  KUSTOMIZE_VERSION: v4.5.2
+
+tasks:
+  default:
+    deps: 
+      - build
+      - lint
+
+  # in case you want to use go install for stuff
+  cli:
+    cmds:
+      - export
+      - GOBIN=${PWD} go install .
+    generates:
+      - obnpctl
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+    status:
+      - test -f obnpctl
+
+  test-with-coverage:
+    deps: 
+      - lint
+    cmds:
+      - go test -covermode atomic -coverprofile='profile.cov' ./...
+    generates:
+      - profile.cov
+    status:
+      - test -f profile.cov
+
+  build:
+    deps: 
+      - goreleaser
+    cmds:
+      - ./bin/goreleaser release 
+          --snapshot 
+          --rm-dist 
+          --skip-sign # cosign only works for github actions
+    generates:
+      - dist/**
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+  
+  lint:
+    deps: 
+      - golangci-lint
+    cmds:
+      - ./bin/golangci-lint run
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+
+  lint-fix:
+    deps: 
+       - golangci-lint
+    cmds:
+      - ./bin/golangci-lint run --fix
+
+  deploy-up:
+    deps: 
+      - kustomize
+      - kubectl-slice
+      - oc
+    cmds:
+      - ./bin/kustomize build ./deploy/config/ | oc apply -f -
+      - ./deploy/config/is_up.sh
+     
+  deploy-down:
+    deps:
+      - kustomize
+      - oc
+    cmds:
+      - ./bin/kustomize build ./deploy/config/ | oc delete -f - --ignore-not-found
+      - ./deploy/config/is_down.sh
+
+  cobra-cli:
+    cmds:
+      - GOBIN=${PWD}/bin go install -mod=readonly github.com/spf13/cobra-cli@${COBRA_CLI_VERSION}
+    generates:
+      - bin/cobra-cli
+    status:
+      - test -f bin/cobra-cli
+      
+  golangci-lint:
+    cmds:
+      - GOBIN=${PWD}/bin go install -mod=readonly github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+    generates:
+      - bin/golangci-lint
+    status:
+      - test -f bin/golangci-lint
+      
+  goreleaser:
+    cmds:
+      - GOBIN=${PWD}/bin go install -mod=readonly github.com/goreleaser/goreleaser@${GORELEASER_VERSION}
+    generates:
+      - bin/goreleaser
+    status:
+      - test -f bin/goreleaser
+      
+  kustomize:
+    cmds:
+      - GOBIN=${PWD}/bin go install -mod=readonly sigs.k8s.io/kustomize/kustomize/${KUSTOMIZE_MAJOR}@${KUSTOMIZE_VERSION}
+    generates:
+      - bin/kustomize
+    status:
+      - test -f bin/kustomize
+      
+  kubectl-slice:
+    cmds:
+      - GOBIN=${PWD}/bin go install -mod=readonly github.com/patrickdappollonio/kubectl-slice@${KUBECTL_SLICE_VERSION}
+    generates:
+      - bin/kubectl-slice
+    status:
+      - test -f bin/kubectl-slice
+      
+  oc:
+    status:
+      - test which oc
+

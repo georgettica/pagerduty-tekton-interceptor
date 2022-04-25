@@ -1,6 +1,6 @@
 module github.com/georgettica/pagerduty-tekton-interceptor
 
-go 1.18
+go 1.17
 
 require (
 	github.com/tektoncd/triggers v0.19.1
