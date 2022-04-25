@@ -31,7 +31,7 @@ dockers:
     - ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/{{ .ProjectName }}:latest
     - ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/{{ .ProjectName }}:{{ .Version }}
     ids:
-      - obnpctl
+      - pagerduty-tekton-interceptor
     dockerfile: ./hack/Dockerfile.goreleaser
 
 archives:

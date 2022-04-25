@@ -1,0 +1,29 @@
+FROM quay.io/app-sre/ubi8-ubi-minimal@sha256:c1cd272f2ffd1d4ae660bdd31d08f2072e9a6a0805d4d31730dc475e55296948 as runner
+
+COPY ./pagerduty-tekton-interceptor /bin/
+
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+ARG DOCKERFILE_PATH
+
+LABEL vendor="Ron Green" \
+    name="geoegettica/obnpctl" \
+    description="a CLI tool explain basic k8s networking" \
+    io.k8s.display-name="geoegettica/obnpctl" \
+    io.k8s.description="a CLI tool explain basic k8s networking" \
+    maintainer="Ron Green <8326+rogreen@users.noreply.gitlab.cee.redhat.com>" \
+    version="$VERSION" \
+    org.label-schema.build-date=$BUILD_DATE \
+    org.label-schema.description="a CLI tool explain basic k8s networking" \
+    org.label-schema.docker.cmd="docker run --rm  geoegettica/obnpctl" \
+    org.label-schema.docker.dockerfile=$DOCKERFILE_PATH \
+    org.label-schema.name="geoegettica/obnpctl" \
+    org.label-schema.schema-version="0.1.0" \
+    org.label-schema.vcs-branch=$VCS_BRANCH \
+    org.label-schema.vcs-ref=$VCS_REF \
+    org.label-schema.vcs-url="https://github.com:georgettica/obnpctl" \
+    org.label-schema.vendor="geoegettica/obnpctl" \
+    org.label-schema.version=$VERSION
+
+ENTRYPOINT ["/bin/pagerduty-tekton-interceptor"]
