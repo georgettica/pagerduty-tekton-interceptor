@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -17,41 +17,36 @@ const (
 	port = 8080
 
 	envCustomHeaderName   = "PAGERDUTY_TEKTON_INTERCEPTOR_CUSTOM_HEADER_NAME"
-	envCustomHeaderSecret = "PAGERDUTY_TEKTON_INTERCEPTOR_CUSTOM_HEADER_SECRET"
-	envWebhookSecretToken = "PAGERDUTY_TEKTON_INTERCEPTOR_WEBHOOK_TOKEN"
+	envCustomHeaderSecret = "PAGERDUTY_TEKTON_INTERCEPTOR_CUSTOM_HEADER_SECRET" /*
+		#nosec -- just the env name, not the value*/
+	// the webhook header for this is X-PagerDuty-Signature.
+	envWebhookSecretToken = "PAGERDUTY_TEKTON_INTERCEPTOR_WEBHOOK_TOKEN" /*
+		#nosec -- just the env name, not the value*/
 
 	webhookBodyReaderLimit = 2 * 1024 * 1024 // 2MB
 )
 
-func ValidatePayload(r *http.Request, secretToken string) (payload []byte, err error) {
+func validatePayload(r *http.Request, secretToken string) (err error) {
 	err = sdk.VerifySignature(r, secretToken)
+
 	if err != nil {
-		return nil, fmt.Errorf("could not verify the signature: %w", err)
+		return fmt.Errorf("could not verify the signature: %w", err)
 	}
-
-	orb := r.Body
-
-	b, err := ioutil.ReadAll(io.LimitReader(r.Body, webhookBodyReaderLimit))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	defer func() { _ = orb.Close() }()
-
-	return b, nil
+	return nil
 }
 
+// WebhookEventDetails contains the data from the pagerduty payload.
 type WebhookEventDetails struct {
 	Event struct {
-		EventType  string    `yaml:"event_type"`
-		ID         string    `yaml:"id"`
-		OccurredAt time.Time `yaml:"occurred_at"`
+		EventType string `json:"event_type"`
+		ID        string `json:"id"`
 	} `yaml:"event"`
 }
 
-func ExtractEventID(r *http.Request) (WebhookEventDetails, error) {
+func extractEventID(r *http.Request) (WebhookEventDetails, error) {
 	var webhookEventDetails WebhookEventDetails
-	b, err := ioutil.ReadAll(io.LimitReader(r.Body, webhookBodyReaderLimit))
+
+	b, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyReaderLimit))
 	if err != nil {
 		return webhookEventDetails, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -61,6 +56,7 @@ func ExtractEventID(r *http.Request) (WebhookEventDetails, error) {
 	defer func() { _ = orb.Close() }()
 
 	err = json.Unmarshal(b, &webhookEventDetails)
+
 	if err != nil {
 		return webhookEventDetails, fmt.Errorf("could not marshal into WebhookEventDetails: %w", err)
 	}
@@ -68,35 +64,91 @@ func ExtractEventID(r *http.Request) (WebhookEventDetails, error) {
 	return webhookEventDetails, nil
 }
 
-// main function
+func getBodyBytes(request *http.Request) ([]byte, error) {
+
+	//code snippet
+	bodyBytes, err := io.ReadAll(io.LimitReader(request.Body, webhookBodyReaderLimit))
+
+	//---------- optioninal ---------------------
+	//handling Errors
+	if err != nil {
+		return nil, err
+	}
+
+	orb := request.Body
+
+	defer func() { _ = orb.Close() }()
+
+	request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	return bodyBytes, nil
+
+}
+
+// main function.
 func main() {
 	customHeaderName := os.Getenv(envCustomHeaderName)
 	customHeaderSecret := os.Getenv(envCustomHeaderSecret)
 	webhookSecretToken := os.Getenv(envWebhookSecretToken)
-	isAnyEnvEmpty := customHeaderName == "" ||
-		customHeaderSecret == "" ||
-		webhookSecretToken == ""
+	// for explanation on why I chose this query,
+	// see https://stackoverflow.com/questions/23025694/is-there-no-xor-operator-for-booleans-in-golang
+	isCustomHeaderInvalid := (customHeaderSecret == "") != (customHeaderName == "")
 
-	if isAnyEnvEmpty {
-		log.Fatalf("one of the required env vars is empty: (%s=%s), (%s=%s), (%s=%s)",
+	if webhookSecretToken == "" {
+		log.Fatalf("the env '%s' is required, but not set", envWebhookSecretToken)
+	}
+
+	if isCustomHeaderInvalid {
+		log.Fatalf("if enabled, both envs need to he set, but one is empty: (%s=%s), (%s=%s)",
 			envCustomHeaderName, customHeaderName,
 			envCustomHeaderSecret, customHeaderSecret,
-			envWebhookSecretToken, webhookSecretToken)
+		)
 	}
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		payload, err := ValidatePayload(request, webhookSecretToken)
+
+		var err error
+
+		fmt.Printf("%v: got request\n", time.Now().UTC())
+		// if the custom header feature is enabled.
+		if (customHeaderSecret != "") && (webhookSecretToken != "") {
+			h := request.Header.Get(customHeaderName)
+			if h != customHeaderSecret {
+				strErr := fmt.Sprintf("the header '%s' is not matching the secret value", customHeaderName)
+				http.Error(writer, strErr, http.StatusBadRequest)
+
+				return
+			}
+		}
+
+		err = validatePayload(request, webhookSecretToken)
 		if err != nil {
 			http.Error(writer, fmt.Sprint(err), http.StatusBadRequest)
+
+			return
 		}
-		id, err := ExtractEventID(request)
+
+		bodyBytes, err := getBodyBytes(request)
+
 		if err != nil {
 			http.Error(writer, fmt.Sprint(err), http.StatusBadRequest)
+			return
 		}
-		n, err := writer.Write(payload)
+		id, err := extractEventID(request)
 		if err != nil {
-			log.Printf("Failed to write response for gitea event ID: %s. Bytes writted: %d. Error: %q", id.Event.ID, n, err)
+			http.Error(writer, fmt.Sprint(err), http.StatusBadRequest)
+
+			return
 		}
+		n, err := writer.Write(bodyBytes)
+		if err != nil {
+			log.Printf("Failed to write response for pagerduty "+
+				"event ID: '%s' "+
+				"Bytes writted: '%d' "+
+				"Error: '%q'\n", id.Event.ID, n, err)
+		}
+		fmt.Printf("%v: request is valid\n", time.Now().UTC())
 	})
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+	fmt.Printf("connecting on port: %d\n", port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", port), nil))
 }

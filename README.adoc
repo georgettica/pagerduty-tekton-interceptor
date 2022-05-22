@@ -6,3 +6,13 @@ Ron Green <8326+rogreen@users.noreply.gitlab.cee.redhat.com>
 In order to make PD payloads be validated based on a secret key, we need to pull write a custom tekton interceptor.
 
 this repo will create the interceptor and all of the required components to deploy it on a cluster
+
+== Testing
+
+to run this use the command:
+
+----
+PAGERDUTY_TEKTON_INTERCEPTOR_WEBHOOK_TOKEN=XXX go run .
+cp payload.json.sample payload.json
+curl -H 'X-PagerDuty-Signature: samplesecret' -d @payload.json localhost:8080
+----

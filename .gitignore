@@ -28,3 +28,5 @@ pagerduty-tekton-interceptor
 
 # TaskFile checksums
 .task/
+
+/payload.json
