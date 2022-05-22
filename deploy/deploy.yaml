@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerduty-webhook-interceptor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pagerduty-webhook-interceptor
+  template:
+    metadata:
+     labels:
+       app.kubernetes.io/name: pagerduty-webhook-interceptor
+    spec:
+      serviceAccountName: pagerduty-webhook-interceptor
+      containers:
+        - name: pagerduty-webhook-interceptor
+          image: pagerduty-webhook-interceptor
+          imagePullPolicy: Always
+          envFrom:
+          - secretRef:
+              name: pagerduty-webhook-interceptor
