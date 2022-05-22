@@ -1,97 +1,102 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
+	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"net/http"
-	"strings"
+	"os"
+	"time"
 
-	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1beta1"
-	"github.com/tektoncd/triggers/pkg/interceptors"
-	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	corev1lister "k8s.io/client-go/listers/core/v1"
+	sdk "github.com/PagerDuty/go-pagerduty/webhookv3"
 )
 
-var _ triggersv1.InterceptorInterface = (*Interceptor)(nil)
+const (
+	port = 8080
 
-type Interceptor struct {
-	SecretLister corev1lister.SecretLister
-	Logger       *zap.SugaredLogger
-}
+	envCustomHeaderName   = "PAGERDUTY_TEKTON_INTERCEPTOR_CUSTOM_HEADER_NAME"
+	envCustomHeaderSecret = "PAGERDUTY_TEKTON_INTERCEPTOR_CUSTOM_HEADER_SECRET"
+	envWebhookSecretToken = "PAGERDUTY_TEKTON_INTERCEPTOR_WEBHOOK_TOKEN"
 
-func NewInterceptor(sl corev1lister.SecretLister, l *zap.SugaredLogger) *Interceptor {
-	return &Interceptor{
-		SecretLister: sl,
-		Logger:       l,
-	}
-}
+	webhookBodyReaderLimit = 2 * 1024 * 1024 // 2MB
+)
 
-// PagerDutyInterceptor provides a webhook to intercept and pre-process events.
-type PagerDutyInterceptor struct {
-	SecretRef *triggersv1.SecretRef `json:"secretRef,omitempty"`
-	// +listType=atomic
-	EventTypes []string `json:"eventTypes,omitempty"`
-}
-
-func (w *Interceptor) Process(ctx context.Context, r *triggersv1.InterceptorRequest) *triggersv1.InterceptorResponse {
-	p := PagerDutyInterceptor{}
-	if err := interceptors.UnmarshalParams(r.InterceptorParams, &p); err != nil {
-		return interceptors.Failf(codes.InvalidArgument, "failed to parse interceptor params: %v", err)
+func ValidatePayload(r *http.Request, secretToken string) (payload []byte, err error) {
+	err = sdk.VerifySignature(r, secretToken)
+	if err != nil {
+		return nil, fmt.Errorf("could not verify the signature: %w", err)
 	}
 
-	headers := interceptors.Canonical(r.Header)
+	orb := r.Body
 
-	// Check if the event type is in the allow-list
-	if p.EventTypes != nil {
-		actualEvent := http.Header(r.Header).Get("X-Event-Key")
-		isAllowed := false
-
-		for _, allowedEvent := range p.EventTypes {
-			if actualEvent == allowedEvent {
-				isAllowed = true
-
-				break
-			}
-		}
-
-		if !isAllowed {
-			return interceptors.Failf(codes.FailedPrecondition, "event type %s is not allowed", actualEvent)
-		}
+	b, err := ioutil.ReadAll(io.LimitReader(r.Body, webhookBodyReaderLimit))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Next validate secrets if set
-	if p.SecretRef != nil {
-		// Check the secret to see if it is empty
-		if p.SecretRef.SecretKey == "" {
-			return interceptors.Fail(codes.FailedPrecondition, "pagerduty interceptor secretRef.secretKey is empty")
-		}
+	defer func() { _ = orb.Close() }()
 
-		header := headers.Get("X-Hub-Signature")
-		if header == "" {
-			return interceptors.Fail(codes.InvalidArgument, "no X-Hub-Signature header set")
-		}
+	return b, nil
+}
 
-		ns, _ := triggersv1.ParseTriggerID(r.Context.TriggerID)
+type WebhookEventDetails struct {
+	Event struct {
+		EventType  string    `yaml:"event_type"`
+		ID         string    `yaml:"id"`
+		OccurredAt time.Time `yaml:"occurred_at"`
+	} `yaml:"event"`
+}
 
-		secretToken, err := interceptors.GetSecretToken(nil, w.SecretLister, p.SecretRef, ns)
+func ExtractEventID(r *http.Request) (WebhookEventDetails, error) {
+	var webhookEventDetails WebhookEventDetails
+	b, err := ioutil.ReadAll(io.LimitReader(r.Body, webhookBodyReaderLimit))
+	if err != nil {
+		return webhookEventDetails, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	orb := r.Body
+
+	defer func() { _ = orb.Close() }()
+
+	err = json.Unmarshal(b, &webhookEventDetails)
+	if err != nil {
+		return webhookEventDetails, fmt.Errorf("could not marshal into WebhookEventDetails: %w", err)
+	}
+
+	return webhookEventDetails, nil
+}
+
+// main function
+func main() {
+	customHeaderName := os.Getenv(envCustomHeaderName)
+	customHeaderSecret := os.Getenv(envCustomHeaderSecret)
+	webhookSecretToken := os.Getenv(envWebhookSecretToken)
+	isAnyEnvEmpty := customHeaderName == "" ||
+		customHeaderSecret == "" ||
+		webhookSecretToken == ""
+
+	if isAnyEnvEmpty {
+		log.Fatalf("one of the required env vars is empty: (%s=%s), (%s=%s), (%s=%s)",
+			envCustomHeaderName, customHeaderName,
+			envCustomHeaderSecret, customHeaderSecret,
+			envWebhookSecretToken, webhookSecretToken)
+	}
+
+	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		payload, err := ValidatePayload(request, webhookSecretToken)
 		if err != nil {
-			return interceptors.Failf(codes.FailedPrecondition, "error getting secret: %v", err)
+			http.Error(writer, fmt.Sprint(err), http.StatusBadRequest)
 		}
-
-		req := new(http.Request)
-		responseBody := io.NopCloser(strings.NewReader(r.Body))
-		req.Header = headers
-		req.Body = responseBody
-
-		if err := sdk.VerifySignature(req, secretToken); err != nil {
-			return interceptors.Failf(codes.FailedPrecondition, err.Error())
+		id, err := ExtractEventID(request)
+		if err != nil {
+			http.Error(writer, fmt.Sprint(err), http.StatusBadRequest)
 		}
-	}
-
-	return &triggersv1.InterceptorResponse{
-		Continue: true,
-	}
+		n, err := writer.Write(payload)
+		if err != nil {
+			log.Printf("Failed to write response for gitea event ID: %s. Bytes writted: %d. Error: %q", id.Event.ID, n, err)
+		}
+	})
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
-
-func main() {}
