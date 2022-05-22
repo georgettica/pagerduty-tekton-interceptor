@@ -16,3 +16,5 @@ PAGERDUTY_TEKTON_INTERCEPTOR_WEBHOOK_TOKEN=XXX go run .
 cp payload.json.sample payload.json
 curl -H 'X-PagerDuty-Signature: samplesecret' -d @payload.json localhost:8080
 ----
+
+for a more detailed testing scenario, see https://github.com/openshift/configuration-anomaly-detection/tree/633203cdfd1a822ba013d0f2c6d040f363eef234/pkg/pagerduty#receiving-pagerduty-webhook-messages
